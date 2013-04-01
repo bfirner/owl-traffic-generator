@@ -72,7 +72,7 @@ void handler(int signal) {
 
 
 int main(int ac, char** arg_vector) {
-  if (ac != 5 ) {
+  if (ac != 6 ) {
     std::cerr<<"This program requires 5 arguments,"<<
       " the ip address and the port number of the owl aggregator,\n"<<
       " the number of unique ID's, the packet interval (in milliseconds),\n"<<
@@ -92,7 +92,7 @@ int main(int ac, char** arg_vector) {
     int id;
     uint64_t tx_time;
     bool operator<(const Txer& other) const {
-      return tx_time < other.tx_time;
+      return other.tx_time < tx_time;
     }
   };
 
@@ -104,12 +104,12 @@ int main(int ac, char** arg_vector) {
   std::priority_queue<Txer> tx_schedule;
 
   //Randomize starting from the current time to one interval away
-  int64_t start_time = msecTime();
-  std::uniform_int_distribution<> dis(start_time, start_time + interval);
+  uint64_t start_time = msecTime();
+  std::uniform_int_distribution<> dis(0, interval);
   for (int i = 0; i < total_ids; ++i) {
     Txer txer;
     txer.id = i;
-    txer.tx_time = dis(gen);
+    txer.tx_time = start_time + dis(gen);
     tx_schedule.push(txer);
   }
 
@@ -121,36 +121,36 @@ int main(int ac, char** arg_vector) {
     SensorConnection agg(server_ip, server_port);
 
     //A try/catch block is set up to handle exception during quitting.
-    try {
-      while (agg and not killed) {
+    while (agg and not killed) {
+      try {
         //Build a sample out of the next message in the priority queue
         Txer txer = tx_schedule.top();
         tx_schedule.pop();
-        //First see if we should randomly drop this packet
-        if (rand_drop(gen) > p_loss) {
-          SampleData sd;
-          sd.physical_layer = 1;
-          sd.tx_id = txer.id;
-          sd.rx_id = 1;
-          sd.rx_timestamp = txer.tx_time;
-          sd.rss = -50.0;
-          sd.valid = true;
-          //Wait until the time to send arrives
-          //TODO FIXME Should break long sleep up so that the program can be
-          //cancelled by user intervention.
-          int64_t time_diff = (txer.tx_time - msecTime());
-          if (0 < time_diff) {
-            usleep(1000*time_diff);
-          }
+        SampleData sd;
+        sd.physical_layer = 1;
+        sd.tx_id = txer.id;
+        sd.rx_id = 1;
+        sd.rx_timestamp = txer.tx_time;
+        sd.rss = -50.0;
+        sd.valid = true;
+        //Wait until the time to send arrives
+        //TODO FIXME Should break long sleep up so that the program can be
+        //cancelled by user intervention.
+        int64_t time_diff = (txer.tx_time - msecTime());
+        if (0 < time_diff) {
+          usleep(1000*time_diff);
+        }
+        //Finally see if we should randomly drop this packet
+        if (rand_drop(gen) >= p_loss) {
           agg.send(sd);
         }
-        //Schedule the next time
+        //Schedule the next time and insert back into the priority queue.
         txer.tx_time += next_time(gen);
         tx_schedule.push(txer);
       }
-    }
-    catch (std::runtime_error& re) {
-      std::cerr<<"USB sensor layer error: "<<re.what()<<'\n';
+      catch (std::runtime_error& re) {
+        std::cerr<<"USB sensor layer error: "<<re.what()<<'\n';
+      }
     }
     //Try to reconnect to the server after losing the connection.
     //Sleep for 1 second, then try connecting to the server again.
